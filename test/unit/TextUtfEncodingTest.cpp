@@ -9,12 +9,10 @@
 
 using namespace ZXing;
 
-#if __cplusplus > 201703L
 std::string EscapeNonGraphical(const char8_t* utf8)
 {
 	return EscapeNonGraphical(reinterpret_cast<const char*>(utf8));
 }
-#endif
 
 TEST(TextUtfEncodingTest, EscapeNonGraphical)
 {
@@ -26,6 +24,19 @@ TEST(TextUtfEncodingTest, EscapeNonGraphical)
 	EXPECT_EQ(EscapeNonGraphical(u8"\u2000"), "<U+2000>"); // Space char (nqsp)
 	EXPECT_EQ(EscapeNonGraphical(u8"\uFFFD"), "<U+FFFD>");
 	EXPECT_EQ(EscapeNonGraphical(u8"\uFFFF"), "<U+FFFF>");
+}
+
+TEST(TextUtfEncodingTest, EscapeNonGraphicalIdempotent)
+{
+	for (char32_t c = 0; c <= 0x1FFFF; ++c) {
+		// if (c >= 0xD800 && c <= 0xDFFF)
+		// 	continue; // skip surrogates
+		std::string buf;
+		AppendToUtf8(buf, c);
+		auto escaped = EscapeNonGraphical(buf);
+		auto escaped2 = EscapeNonGraphical(escaped);
+		EXPECT_EQ(escaped, escaped2) << "Failed for codepoint U+" << std::hex << std::uppercase << (int32_t)c;
+	}
 }
 
 TEST(TextUtfEncodingTest, FromUtf8)

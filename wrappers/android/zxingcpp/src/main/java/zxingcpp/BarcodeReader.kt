@@ -27,9 +27,59 @@ public class BarcodeReader(public var options: Options = Options()) {
 
 	// Enumerates barcode formats known to this package.
 	// Note that this has to be kept synchronized with native (C++/JNI) side.
-	public enum class Format {
-		NONE, AZTEC, CODABAR, CODE_39, CODE_93, CODE_128, DATA_BAR, DATA_BAR_EXPANDED,
-		DATA_MATRIX, DX_FILM_EDGE, EAN_8, EAN_13, ITF, MAXICODE, PDF_417, QR_CODE, MICRO_QR_CODE, RMQR_CODE, UPC_A, UPC_E
+	public enum class Format(public val value: Int) {
+		NONE                (0x0000),
+		ALL                 (0x2A2A),
+		ALL_READABLE        (0x722A),
+		ALL_CREATABLE       (0x772A),
+		ALL_LINEAR          (0x6C2A),
+		ALL_MATRIX          (0x6D2A),
+		ALL_GS1             (0x472A),
+		ALL_RETAIL          (0x522A),
+		ALL_INDUSTRIAL      (0x492A),
+		CODABAR             (0x2046),
+		CODE_39             (0x2041),
+		CODE_39_STD         (0x7341),
+		CODE_39_EXT         (0x6541),
+		CODE_32             (0x3241),
+		PZN                 (0x7041),
+		CODE_93             (0x2047),
+		CODE_128            (0x2043),
+		ITF                 (0x2049),
+		ITF_14              (0x3449),
+		DATA_BAR            (0x2065),
+		DATA_BAR_OMNI       (0x6F65),
+		DATA_BAR_STK        (0x7365),
+		DATA_BAR_STK_OMNI   (0x4F65),
+		DATA_BAR_LTD        (0x6C65),
+		DATA_BAR_EXP        (0x6565),
+		DATA_BAR_EXP_STK    (0x4565),
+		EAN_UPC             (0x2045),
+		EAN_13              (0x3145),
+		EAN_8               (0x3845),
+		EAN_5               (0x3545),
+		EAN_2               (0x3245),
+		ISBN                (0x6945),
+		UPC_A               (0x6145),
+		UPC_E               (0x6545),
+		TELEPEN             (0x2042),
+		TELEPEN_ALPHA       (0x3042),
+		TELEPEN_NUMERIC     (0x3142),
+		OTHER_BARCODE       (0x2058),
+		DX_FILM_EDGE        (0x7858),
+		PDF_417             (0x204C),
+		COMPACT_PDF_417     (0x634C),
+		MICRO_PDF_417       (0x6D4C),
+		AZTEC               (0x207A),
+		AZTEC_CODE          (0x637A),
+		AZTEC_RUNE          (0x727A),
+		QR_CODE             (0x2051),
+		QR_CODE_MODEL_1     (0x3151),
+		QR_CODE_MODEL_2     (0x3251),
+		MICRO_QR_CODE       (0x6D51),
+		RMQR_CODE           (0x7251),
+		DATA_MATRIX         (0x2064),
+		MAXI_CODE           (0x2055),
 	}
 
 	public enum class ContentType {
@@ -45,11 +95,11 @@ public class BarcodeReader(public var options: Options = Options()) {
 	}
 
 	public enum class TextMode {
-		PLAIN, ECI, HRI, HEX, ESCAPED
+		PLAIN, ECI, HRI, ESCAPED, HEX, HEX_ECI
 	}
 
 	public enum class ErrorType {
-		FORMAT, CHECKSUM, UNSUPPORTED
+		NONE, FORMAT, CHECKSUM, UNSUPPORTED
 	}
 
 	public data class Options(
@@ -58,19 +108,20 @@ public class BarcodeReader(public var options: Options = Options()) {
 		var tryRotate: Boolean = false,
 		var tryInvert: Boolean = false,
 		var tryDownscale: Boolean = false,
+		var tryDenoise: Boolean = false,
 		var isPure: Boolean = false,
 		var binarizer: Binarizer = Binarizer.LOCAL_AVERAGE,
 		var downscaleFactor: Int = 3,
 		var downscaleThreshold: Int = 500,
 		var minLineCount: Int = 2,
 		var maxNumberOfSymbols: Int = 0xff,
+		var validateOptionalChecksum: Boolean = false,
+		@Deprecated("See https://github.com/zxing-cpp/zxing-cpp/discussions/704")
 		var tryCode39ExtendedMode: Boolean = true,
-		@Deprecated("See https://github.com/zxing-cpp/zxing-cpp/discussions/704")
+		@Deprecated("Use validateOptionalChecksum")
 		var validateCode39CheckSum: Boolean = false,
-		@Deprecated("See https://github.com/zxing-cpp/zxing-cpp/discussions/704")
+		@Deprecated("Use validateOptionalChecksum")
 		var validateITFCheckSum: Boolean = false,
-		@Deprecated("See https://github.com/zxing-cpp/zxing-cpp/discussions/704")
-		var returnCodabarStartEnd: Boolean = false,
 		var returnErrors: Boolean = false,
 		var eanAddOnSymbol: EanAddOnSymbol = EanAddOnSymbol.IGNORE,
 		var textMode: TextMode = TextMode.HRI,
@@ -86,8 +137,12 @@ public class BarcodeReader(public var options: Options = Options()) {
 		val topRight: Point,
 		val bottomRight: Point,
 		val bottomLeft: Point,
+		val rotation: Double
+	) {
+		@Deprecated("Use rotation instead")
 		val orientation: Double
-	)
+			get() = rotation
+	}
 
 	public data class Result(
 		val format: Format,
@@ -95,16 +150,26 @@ public class BarcodeReader(public var options: Options = Options()) {
 		val text: String?,
 		val contentType: ContentType,
 		val position: Position,
-		val orientation: Int,
+		val rotation: Int,
 		val ecLevel: String?,
 		val symbologyIdentifier: String?,
+		private val extraJsonString: String?,
 		val sequenceSize: Int,
 		val sequenceIndex: Int,
 		val sequenceId: String?,
 		val readerInit: Boolean,
 		val lineCount: Int,
 		val error: Error?,
-	)
+	) {
+		@Deprecated("Use rotation instead") val orientation: Int
+			get() = rotation
+
+		// Additional symbology-specific metadata (e.g. "UPCE" for the original UPC-E text), keyed by name.
+		val extra: Map<String, Any?> by lazy {
+			val json = extraJsonString?.takeIf { it.isNotEmpty() }?.let { org.json.JSONObject(it) } ?: org.json.JSONObject()
+			json.keys().asSequence().associateWith { json.get(it).takeIf { v -> v != org.json.JSONObject.NULL } }
+		}
+	}
 
 	public val lastReadTime : Int = 0 // runtime of last read call in ms (for debugging purposes only)
 

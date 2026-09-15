@@ -5,17 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "GTIN.h"
-#include "ReadBarcode.h"
-#include "Version.h"
+#include "ZXingCpp.h"
 
-#ifdef ZXING_EXPERIMENTAL_API
-#include "WriteBarcode.h"
-#endif
-
-#include <cctype>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <iostream>
+#include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -25,6 +22,10 @@
 #include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+
+#ifdef ZXING_USE_WEBP
+#include <webp/decode.h>
+#endif
 
 using namespace ZXing;
 
@@ -37,6 +38,7 @@ struct CLI
 	bool oneLine = false;
 	bool bytesOnly = false;
 	bool showSymbol = false;
+	bool json = false;
 };
 
 static void PrintUsage(const char* exePath)
@@ -56,8 +58,10 @@ static void PrintUsage(const char* exePath)
 			  << "    -mode <plain|eci|hri|escaped>\n"
 			  << "               Text mode used to render the raw byte content into text\n"
 			  << "    -1         Print only file name, content/error on one line per file/barcode (implies '-mode Escaped')\n"
-#ifdef ZXING_EXPERIMENTAL_API
 			  << "    -symbol    Print the detected symbol (if available)\n"
+			  << "    -json      Print a complete JSON formatted serialization\n"
+#ifdef ZXING_EXPERIMENTAL_API
+			  << "    -denoise   Use extra denoiseing (closing operation)\n"
 #endif
 			  << "    -bytes     Write (only) the bytes content of the symbol(s) to stdout\n"
 			  << "    -pngout <file name>\n"
@@ -65,70 +69,72 @@ static void PrintUsage(const char* exePath)
 			  << "    -help      Print usage information\n"
 			  << "    -version   Print version information\n"
 			  << "\n"
-			  << "Supported formats are:\n";
-	for (auto f : BarcodeFormats::all()) {
-		std::cout << "    " << ToString(f) << "\n";
+			  << "Supported formats are (Symbology : Variants):";
+	for (auto f : BarcodeFormats::list(BarcodeFormat::AllReadable)) {
+		if (Symbology(f) == f)
+			std::cout << "\n " << std::setw(13) << ToString(f) << " : ";
+		else
+			std::cout << ToString(f) << ", ";
 	}
-	std::cout << "Formats can be lowercase, with or without '-', separated by ',' and/or '|'\n";
+	std::cout << "\n\n";
+
+	std::cout << "BarcodeFormats can be lowercase, with or without any of ' -_/', separated by ',' or '|'\n";
 }
 
 static bool ParseOptions(int argc, char* argv[], ReaderOptions& options, CLI& cli)
 {
-#ifdef ZXING_EXPERIMENTAL_API
-	options.setTryDenoise(true);
-#endif
-
 	for (int i = 1; i < argc; ++i) {
 		auto is = [&](const char* str) { return strlen(argv[i]) > 1 && strncmp(argv[i], str, strlen(argv[i])) == 0; };
 		if (is("-fast")) {
-			options.setTryHarder(false);
-#ifdef ZXING_EXPERIMENTAL_API
-			options.setTryDenoise(false);
-#endif
+			options.tryHarder(false);
 		} else if (is("-norotate")) {
-			options.setTryRotate(false);
+			options.tryRotate(false);
 		} else if (is("-noinvert")) {
-			options.setTryInvert(false);
+			options.tryInvert(false);
 		} else if (is("-noscale")) {
-			options.setTryDownscale(false);
+			options.tryDownscale(false);
+#ifdef ZXING_EXPERIMENTAL_API
+		} else if (is("-denoise")) {
+			options.tryDenoise(true);
+#endif
 		} else if (is("-single")) {
-			options.setMaxNumberOfSymbols(1);
+			options.maxNumberOfSymbols(1);
 		} else if (is("-ispure")) {
-			options.setIsPure(true);
-			options.setBinarizer(Binarizer::FixedThreshold);
+			options.isPure(true);
+			options.binarizer(Binarizer::FixedThreshold);
 		} else if (is("-errors")) {
-			options.setReturnErrors(true);
+			options.returnErrors(true);
 		} else if (is("-formats")) {
 			if (++i == argc)
 				return false;
 			try {
-				options.setFormats(BarcodeFormatsFromString(argv[i]));
+				options.formats(BarcodeFormatsFromString(argv[i]));
 			} catch (const std::exception& e) {
-				std::cerr << e.what() << "\n";
+				std::cerr << "Error: " << e.what() << "\n\n";
 				return false;
 			}
 		} else if (is("-binarizer")) {
 			if (++i == argc)
 				return false;
 			else if (is("local"))
-				options.setBinarizer(Binarizer::LocalAverage);
+				options.binarizer(Binarizer::LocalAverage);
 			else if (is("global"))
-				options.setBinarizer(Binarizer::GlobalHistogram);
+				options.binarizer(Binarizer::GlobalHistogram);
 			else if (is("fixed"))
-				options.setBinarizer(Binarizer::FixedThreshold);
+				options.binarizer(Binarizer::FixedThreshold);
 			else
 				return false;
 		} else if (is("-mode")) {
 			if (++i == argc)
 				return false;
 			else if (is("plain"))
-				options.setTextMode(TextMode::Plain);
+				options.textMode(TextMode::Plain);
 			else if (is("eci"))
-				options.setTextMode(TextMode::ECI);
+				options.textMode(TextMode::ECI);
 			else if (is("hri"))
-				options.setTextMode(TextMode::HRI);
+				options.textMode(TextMode::HRI);
 			else if (is("escaped"))
-				options.setTextMode(TextMode::Escaped);
+				options.textMode(TextMode::Escaped);
 			else
 				return false;
 		} else if (is("-1")) {
@@ -137,6 +143,8 @@ static bool ParseOptions(int argc, char* argv[], ReaderOptions& options, CLI& cl
 			cli.bytesOnly = true;
 		} else if (is("-symbol")) {
 			cli.showSymbol = true;
+		} else if (is("-json")) {
+			cli.json = true;
 		} else if (is("-pngout")) {
 			if (++i == argc)
 				return false;
@@ -144,16 +152,16 @@ static bool ParseOptions(int argc, char* argv[], ReaderOptions& options, CLI& cl
 		} else if (is("-channels")) {
 			if (++i == argc)
 				return false;
-			cli.forceChannels = atoi(argv[i]);
+			cli.forceChannels = std::stoi(argv[i]);
 		} else if (is("-rotate")) {
 			if (++i == argc)
 				return false;
-			cli.rotate = atoi(argv[i]);
+			cli.rotate = std::stoi(argv[i]);
 		} else if (is("-help") || is("--help")) {
 			PrintUsage(argv[0]);
 			exit(0);
 		} else if (is("-version") || is("--version")) {
-			std::cout << "ZXingReader " << ZXING_VERSION_STR << "\n";
+			std::cout << "ZXingReader version " << Version() << "\n";
 			exit(0);
 		} else {
 			cli.filePaths.push_back(argv[i]);
@@ -185,6 +193,47 @@ void drawRect(const ImageView& image, const Position& pos, bool error)
 		drawLine(image, pos[i], pos[(i + 1) % 4], error);
 }
 
+std::unique_ptr<uint8_t, void (*)(void*)> LoadWebP(const std::string& filePath, int* width, int* height, int* channels)
+{
+#ifdef ZXING_USE_WEBP
+	std::ifstream file(filePath, std::ios::binary);
+	if (!file)
+		throw std::runtime_error("Failed to read image: " + filePath + " (failed to open file)");
+
+	std::vector<uint8_t> compressedData(std::istreambuf_iterator<char>(file), {});
+	if (compressedData.empty())
+		throw std::runtime_error("Failed to read image: " + filePath + " (empty file)");
+
+	*channels = 3;
+	uint8_t* img = WebPDecodeRGB(compressedData.data(), compressedData.size(), width, height);
+
+	if (img == nullptr)
+		throw std::runtime_error("Failed to read image: " + filePath + " (WebP decode failed)");
+
+	return std::unique_ptr<uint8_t, void (*)(void*)>(img, WebPFree);
+#else
+	std::cerr << "Failed to read image: " << filePath << " (WebP support is not enabled in this build)" << "\n";
+	return std::unique_ptr<uint8_t, void (*)(void*)>(nullptr, nullptr);
+#endif
+}
+
+std::unique_ptr<uint8_t, void (*)(void*)> LoadStbi(const std::string& filePath, int* width, int* height, int* channels, int forceChannels)
+{
+	auto buffer = std::unique_ptr<uint8_t, void (*)(void*)>(
+		filePath == "-" ? stbi_load_from_file(stdin, width, height, channels, forceChannels)
+						: stbi_load(filePath.c_str(), width, height, channels, forceChannels),
+		stbi_image_free);
+	if (buffer == nullptr)
+		std::cerr << "Failed to read image: " << filePath << " (" << stbi_failure_reason() << ")" << "\n";
+	return buffer;
+}
+
+bool IEndsWith(std::string_view str, std::string_view suffix)
+{
+	return str.size() > suffix.size() && std::equal(str.end() - suffix.size(), str.end(), suffix.begin(),
+			[](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
+}
+
 int main(int argc, char* argv[])
 {
 	ReaderOptions options;
@@ -192,8 +241,8 @@ int main(int argc, char* argv[])
 	Barcodes allBarcodes;
 	int ret = 0;
 
-	options.setTextMode(TextMode::HRI);
-	options.setEanAddOnSymbol(EanAddOnSymbol::Read);
+	options.textMode(TextMode::HRI);
+	options.eanAddOnSymbol(EanAddOnSymbol::Read);
 
 	if (!ParseOptions(argc, argv, options, cli)) {
 		PrintUsage(argv[0]);
@@ -207,14 +256,12 @@ int main(int argc, char* argv[])
 
 	for (const auto& filePath : cli.filePaths) {
 		int width, height, channels;
-		std::unique_ptr<stbi_uc, void (*)(void*)> buffer(
-			filePath == "-" ? stbi_load_from_file(stdin, &width, &height, &channels, cli.forceChannels)
-							: stbi_load(filePath.c_str(), &width, &height, &channels, cli.forceChannels),
-			stbi_image_free);
-		if (buffer == nullptr) {
-			std::cerr << "Failed to read image: " << filePath << " (" << stbi_failure_reason() << ")" << "\n";
-			return -1;
-		}
+		auto buffer = IEndsWith(filePath, ".webp")
+						  ? LoadWebP(filePath, &width, &height, &channels)
+						  : LoadStbi(filePath, &width, &height, &channels, cli.forceChannels);
+		if (buffer == nullptr)
+			continue;
+
 		channels = cli.forceChannels ? cli.forceChannels : channels;
 
 		auto ImageFormatFromChannels = std::array{ImageFormat::None, ImageFormat::Lum, ImageFormat::LumA, ImageFormat::RGB, ImageFormat::RGBA};
@@ -244,6 +291,12 @@ int main(int argc, char* argv[])
 				continue;
 			}
 
+			if (cli.json) {
+				if (barcode.format() != BarcodeFormat::None)
+					std::cout << "{\"FilePath\":\"" << filePath << "\"," << barcode.extra("ALL").substr(1) << "\n";
+				continue;
+			}
+
 			if (cli.oneLine) {
 				std::cout << filePath << " " << ToString(barcode.format());
 				if (barcode.isValid())
@@ -269,13 +322,14 @@ int main(int argc, char* argv[])
 			}
 
 			std::cout << "Text:       \"" << barcode.text() << "\"\n"
-					  << "Bytes:      " << ToHex(options.textMode() == TextMode::ECI ? barcode.bytesECI() : barcode.bytes()) << "\n"
+					  << "Bytes:      " << barcode.text(options.textMode() == TextMode::ECI ? TextMode::HexECI : TextMode::Hex) << "\n"
 					  << "Format:     " << ToString(barcode.format()) << "\n"
+					  << "Symbology:  " << ToString(barcode.symbology()) << "\n"
 					  << "Identifier: " << barcode.symbologyIdentifier() << "\n"
 					  << "Content:    " << ToString(barcode.contentType()) << "\n"
 					  << "HasECI:     " << barcode.hasECI() << "\n"
 					  << "Position:   " << ToString(barcode.position()) << "\n"
-					  << "Rotation:   " << barcode.orientation() << " deg\n"
+					  << "Rotation:   " << barcode.rotation() << " deg\n"
 					  << "IsMirrored: " << barcode.isMirrored() << "\n"
 					  << "IsInverted: " << barcode.isInverted() << "\n";
 
@@ -284,20 +338,19 @@ int main(int argc, char* argv[])
 					std::cout << key << v << "\n";
 			};
 
-			printOptional("EC Level:   ", barcode.ecLevel());
+			printOptional("ECLevel:    ", barcode.ecLevel());
 			printOptional("Version:    ", barcode.version());
 			printOptional("Error:      ", ToString(barcode.error()));
 
 			if (barcode.lineCount())
 				std::cout << "Lines:      " << barcode.lineCount() << "\n";
 
-			if ((BarcodeFormat::EAN13 | BarcodeFormat::EAN8 | BarcodeFormat::UPCA | BarcodeFormat::UPCE)
-					.testFlag(barcode.format())) {
+			if (barcode.symbology() == BarcodeFormat::EANUPC) {
 				printOptional("Country:    ", GTIN::LookupCountryIdentifier(barcode.text(), barcode.format()));
 				printOptional("Add-On:     ", GTIN::EanAddOn(barcode));
 				printOptional("Price:      ", GTIN::Price(GTIN::EanAddOn(barcode)));
 				printOptional("Issue #:    ", GTIN::IssueNr(GTIN::EanAddOn(barcode)));
-			} else if (barcode.format() == BarcodeFormat::ITF && Size(barcode.bytes()) == 14) {
+			} else if (barcode.format() == BarcodeFormat::ITF && barcode.bytes().size() == 14) {
 				printOptional("Country:    ", GTIN::LookupCountryIdentifier(barcode.text(), barcode.format()));
 			}
 
@@ -308,16 +361,12 @@ int main(int argc, char* argv[])
 				std::cout << "Structured Append: merged result from " << barcode.sequenceSize() << " symbols (parity/id: '"
 						  << barcode.sequenceId() << "')\n";
 
-			if (barcode.readerInit())
-				std::cout << "Reader Initialisation/Programming\n";
-
-#ifdef ZXING_EXPERIMENTAL_API
+			printOptional("Extra:      ", barcode.extra());
 			if (cli.showSymbol && barcode.symbol().data())
 				std::cout << "Symbol:\n" << WriteBarcodeToUtf8(barcode);
-#endif
 		}
 
-		if (Size(cli.filePaths) == 1 && !cli.outPath.empty())
+		if (cli.filePaths.size() == 1 && !cli.outPath.empty())
 			stbi_write_png(cli.outPath.c_str(), image.width(), image.height(), 3, image.data(), image.rowStride());
 
 #ifdef NDEBUG
@@ -334,7 +383,7 @@ int main(int argc, char* argv[])
 				if (blockSize < 1000 && duration < std::chrono::milliseconds(100))
 					blockSize *= 10;
 			} while (duration < std::chrono::seconds(1));
-			printf("time: %5.2f ms per frame\n", double(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()) / N);
+			fprintf(stderr, "time: %5.2f ms per frame\n", double(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()) / N);
 		}
 #endif
 	}

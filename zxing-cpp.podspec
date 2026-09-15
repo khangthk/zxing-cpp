@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name = 'zxing-cpp'
-  s.version = '2.2.0'
+  s.version = '3.1.1'
   s.summary = 'C++ port of ZXing'
   s.homepage = 'https://github.com/zxing-cpp/zxing-cpp'
   s.author = 'axxel'
@@ -14,19 +14,25 @@ Pod::Spec.new do |s|
     :tag => "v#{s.version}"
   }
   s.module_name = 'ZXingCpp'
-  s.platform = :ios, '11.0'
+  s.platform = :ios, '12.0'
   s.library = ['c++']
-  s.compiler_flags = '-DZXING_READERS'
+  s.compiler_flags = [
+    '-DZXING_INTERNAL',
+    '-Wno-comma'
+  ]
   s.pod_target_xcconfig = {
-    'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20'
+    'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20',
+    'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/wrappers/ios/Sources/Wrapper'
   }
 
   s.default_subspec = 'Wrapper'
 
   s.subspec 'Core' do |ss|
-    ss.source_files = 'core/src/**/*.{h,c,cpp}'
+    ss.source_files = 'core/src/**/*.{h,c,cpp}', 'wrappers/ios/Sources/Wrapper/Version.h'
     ss.exclude_files = [ 'core/src/libzint/**' ]
-    ss.private_header_files = 'core/src/**/*.h'
+    # Keep all Core headers private: exposing the raw C++ API as public headers
+    # makes CocoaPods generate a module/umbrella import path that fails to build.
+    ss.private_header_files = 'core/src/**/*.h', 'wrappers/ios/Sources/Wrapper/Version.h'
   end
 
   s.subspec 'Wrapper' do |ss|

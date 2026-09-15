@@ -4,6 +4,7 @@
 
 #import "ZXIReaderOptions.h"
 #import "ReaderOptions.h"
+#import "ZXIFormatHelper.h"
 
 @interface ZXIReaderOptions()
 @property(nonatomic) ZXing::ReaderOptions cppOpts;
@@ -15,6 +16,30 @@
     self = [super init];
     self.cppOpts = ZXing::ReaderOptions();
     return self;
+}
+
+-(NSArray<NSNumber *> *)formats {
+    NSMutableArray<NSNumber *> *formats = [NSMutableArray array];
+    // the ivar, not the property: the latter returns by value, so the reference
+    // returned by formats() would dangle for the body of the loop
+    for (auto format : _cppOpts.formats()) {
+        ZXIFormat mapped = ZXIFormatFromBarcodeFormat(format);
+        if (mapped != ZXIFormat::NONE) {
+            [formats addObject:[NSNumber numberWithInteger:mapped]];
+        }
+    }
+    return formats;
+}
+
+-(void)setFormats:(NSArray<NSNumber *> *)formats {
+    std::vector<ZXing::BarcodeFormat> nativeFormats;
+    nativeFormats.reserve(formats.count);
+
+    for (NSNumber *formatValue in formats) {
+        nativeFormats.push_back(BarcodeFormatFromZXIFormat((ZXIFormat)formatValue.integerValue));
+    }
+
+    self.cppOpts = self.cppOpts.setFormats(std::move(nativeFormats));
 }
 
 -(BOOL)tryHarder {
@@ -145,14 +170,6 @@ ZXing::Binarizer toNativeBinarizer(ZXIBinarizer binarizer) {
     self.cppOpts = self.cppOpts.setValidateITFCheckSum(validateITFCheckSum);
 }
 
--(BOOL)returnCodabarStartEnd {
-    return self.cppOpts.returnCodabarStartEnd();
-}
-
--(void)setReturnCodabarStartEnd:(BOOL)returnCodabarStartEnd {
-    self.cppOpts = self.cppOpts.setReturnCodabarStartEnd(returnCodabarStartEnd);
-}
-
 -(BOOL)returnErrors {
     return self.cppOpts.returnErrors();
 }
@@ -198,10 +215,12 @@ ZXing::EanAddOnSymbol toNativeEanAddOnSymbol(ZXIEanAddOnSymbol eanAddOnSymbol) {
             return ZXITextMode::ZXITextModeECI;
         case ZXing::TextMode::HRI:
             return ZXITextMode::ZXITextModeHRI;
-        case ZXing::TextMode::Hex:
-            return ZXITextMode::ZXITextModeHex;
         case ZXing::TextMode::Escaped:
             return ZXITextMode::ZXITextModeEscaped;
+        case ZXing::TextMode::Hex:
+            return ZXITextMode::ZXITextModeHex;
+        case ZXing::TextMode::HexECI:
+            return ZXITextMode::ZXITextModeHexECI;
     }
 }
 
@@ -214,10 +233,12 @@ ZXing::TextMode toNativeTextMode(ZXITextMode mode) {
             return ZXing::TextMode::ECI;
         case ZXITextModeHRI:
             return ZXing::TextMode::HRI;
-        case ZXITextModeHex:
-            return ZXing::TextMode::Hex;
         case ZXITextModeEscaped:
             return ZXing::TextMode::Escaped;
+        case ZXITextModeHex:
+            return ZXing::TextMode::Hex;
+        case ZXITextModeHexECI:
+            return ZXing::TextMode::HexECI;
     }
 }
 

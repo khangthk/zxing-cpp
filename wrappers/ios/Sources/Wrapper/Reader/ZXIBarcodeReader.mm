@@ -17,10 +17,10 @@ NSString *stringToNSString(const std::string &text) {
     return [[NSString alloc]initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding];
 }
 
-ZXIGTIN *getGTIN(const Result &result) {
+ZXIGTIN *getGTIN(const Barcode &barcode) {
     try {
-        auto country = GTIN::LookupCountryIdentifier(result.text(TextMode::Plain), result.format());
-        auto addOn = GTIN::EanAddOn(result);
+        auto country = GTIN::LookupCountryIdentifier(barcode.text(TextMode::Plain), barcode.format());
+        auto addOn = GTIN::EanAddOn(barcode);
         return country.empty()
             ? nullptr
             : [[ZXIGTIN alloc]initWithCountry:stringToNSString(country)
@@ -32,6 +32,21 @@ ZXIGTIN *getGTIN(const Result &result) {
         // we don't want to discard the whole result.
         return nullptr;
     }
+}
+
+NSDictionary<NSString *, id> *getExtra(const Barcode &barcode) {
+    std::string json = barcode.extra();
+    if (json.empty()) {
+        return @{};
+    }
+
+    NSData *data = [NSData dataWithBytes:json.data() length:json.size()];
+    NSError *jsonError = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+    if (jsonError || ![obj isKindOfClass:[NSDictionary class]]) {
+        return @{};
+    }
+    return (NSDictionary<NSString *, id> *)obj;
 }
 
 @interface ZXIReaderOptions()
@@ -131,9 +146,10 @@ ZXIGTIN *getGTIN(const Result &result) {
                               format:ZXIFormatFromBarcodeFormat(result.format())
                                bytes:[[NSData alloc] initWithBytes:result.bytes().data() length:result.bytes().size()]
                             position:[[ZXIPosition alloc]initWithPosition: result.position()]
-                         orientation:result.orientation()
+                            rotation:result.rotation()
                              ecLevel:stringToNSString(result.ecLevel())
                  symbologyIdentifier:stringToNSString(result.symbologyIdentifier())
+                               extra:getExtra(result)
                         sequenceSize:result.sequenceSize()
                        sequenceIndex:result.sequenceIndex()
                           sequenceId:stringToNSString(result.sequenceId())
@@ -145,6 +161,9 @@ ZXIGTIN *getGTIN(const Result &result) {
         return zxiResults;
     } catch(std::exception &e) {
         SetNSError(error, ZXIReaderError, e.what());
+        return nil;
+    } catch (...) {
+        SetNSError(error, ZXIReaderError, "An unknown error occurred");
         return nil;
     }
 }
